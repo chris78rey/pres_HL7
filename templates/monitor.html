@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Monitor HL7 HIS/RIS</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Verdana', Arial, sans-serif;
+            background: #222;
+            color: #eee;
+            font-size: 1.25em;
+            letter-spacing: 0.04em;
+            line-height: 1.7;
+        }
+        .his { color: #4ec9b0; font-weight: bold; }
+        .ris { color: #dcdcaa; font-weight: bold; }
+        .log { margin: 2em 0; }
+        .timestamp { color: #888; margin-right: 0.5em; font-size: 0.95em; }
+        .desc { color: #b5cea8; font-size: 1.4em; margin-left: 2em; font-weight: bold; }
+        .msgtype { color: #569cd6; font-weight: bold; }
+        .panel {
+            background: #222; border: 1px solid #444; border-radius: 8px; padding: 1em; margin-bottom: 1em;
+        }
+        pre {
+            font-family: 'Verdana', Arial, sans-serif;
+            font-size: 1em;
+            background: none;
+            color: inherit;
+            margin: 0;
+            display: inline;
+        }
+        .logs-container {
+            display: flex;
+            gap: 2em;
+            justify-content: center;
+        }
+        .logs-col {
+            flex: 1;
+            min-width: 350px;
+            max-width: 50vw;
+        }
+        .logs-title {
+            text-align: center;
+            font-size: 1.2em;
+            color: #aaa;
+            margin-bottom: 0.5em;
+        }
+    </style>
+</head>
+<body>
+    <h2>Monitor HL7 HIS/RIS</h2>
+    <div class="panel">
+        <b>¿Qué hace cada mensaje?</b>
+        <ul>
+            <li><span class="msgtype">ADT^A04</span>: <b>Registro/Alta de paciente</b>.<br>
+                <span class="desc">El HIS informa al RIS que un paciente ha sido registrado o admitido. Permite que el RIS cree el paciente en su base de datos y esté listo para recibir órdenes.</span>
+            </li>
+            <li><span class="msgtype">OMI^O23</span>: <b>Orden médica de imágenes</b>.<br>
+                <span class="desc">El HIS envía una solicitud de estudio de imágenes (por ejemplo, radiografía o tomografía) al RIS. Incluye datos del paciente, tipo de estudio y médico solicitante.</span>
+            </li>
+            <li><span class="msgtype">ACK</span>: <b>Confirmación de recepción</b>.<br>
+                <span class="desc">El receptor (RIS o HIS) responde con un ACK para indicar que recibió y procesó correctamente el mensaje HL7 previo. Si hay un error, el ACK puede indicar rechazo.</span>
+            </li>
+            <li><span class="msgtype">ORU^R01</span>: <b>Resultado de estudio</b>.<br>
+                <span class="desc">El RIS envía al HIS el resultado del estudio realizado (informe, hallazgos, etc.). El HIS lo asocia al paciente y la orden original.</span>
+            </li>
+        </ul>
+        <div style="color:#888; margin-top:0.5em;">
+            <b>Flujo típico:</b> Registro de paciente (ADT^A04) → Orden de estudio (OMI^O23) → ACKs de confirmación → Resultado (ORU^R01) → ACK final.<br>
+            Los mensajes se muestran en tiempo real, diferenciados por origen (HIS/RIS).
+        </div>
+    </div>
+    <div class="logs-container">
+        <div class="logs-col" id="logs-his">
+            <div class="logs-title">Mensajes HIS</div>
+        </div>
+        <div class="logs-col" id="logs-ris">
+            <div class="logs-title">Mensajes RIS</div>
+        </div>
+    </div>
+    <script>
+        const socket = io();
+        const logsHis = document.getElementById('logs-his');
+        const logsRis = document.getElementById('logs-ris');
+        // Explicación automática por tipo de mensaje
+        function getMsgExplanation(msg) {
+            if (msg.includes('ADT^A04')) return '→ Registro de paciente en el RIS. Permite que el RIS cree el paciente y reciba órdenes.';
+            if (msg.includes('OMI^O23')) return '→ Orden de estudio de imagen enviada al RIS. Incluye tipo de estudio y médico solicitante.';
+            if (msg.includes('ORU^R01')) return '→ Resultado de estudio de imagen enviado al HIS. Contiene el informe o hallazgos.';
+            if (msg.includes('ACK')) return '→ Confirmación de recepción (ACK). El receptor procesó correctamente el mensaje anterior.';
+            return '';
+        }
+        socket.on('new_log', function(data) {
+            const div = document.createElement('div');
+            div.className = 'log ' + data.source.toLowerCase();
+            let desc = getMsgExplanation(data.msg);
+            div.innerHTML = `<span class="timestamp">[${data.timestamp}]</span> <b>${data.source}</b>: <pre style="display:inline">${data.msg}</pre>` + (desc ? `<div class='desc'>${desc}</div>` : '');
+            if (data.source === 'HIS') {
+                logsHis.appendChild(div);
+            } else if (data.source === 'RIS') {
+                logsRis.appendChild(div);
+            } else {
+                // Si no se reconoce el origen, mostrar en ambas
+                logsHis.appendChild(div.cloneNode(true));
+                logsRis.appendChild(div);
+            }
+            window.scrollTo(0, document.body.scrollHeight);
+        });
+    </script>
+</body>
+</html>
