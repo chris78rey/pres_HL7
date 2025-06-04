@@ -2,26 +2,27 @@
 Simulador RIS/PACS para flujo HL7 v2 con HIS usando hl7apy y MLLP.
 Actúa como servidor MLLP (recibe ADT, OMI) y cliente MLLP (envía ACK, ORU).
 """
-import socket
-import threading
-import time
-import random
-import requests
-from hl7apy.core import Message
-from hl7apy.parser import parse_message
+# Importación de librerías estándar y de terceros
+import socket  # Para comunicación de red
+import threading  # Para ejecución en hilos
+import time  # Para delays y timestamps
+import random  # Para simular variabilidad si se desea
+import requests  # Para enviar logs al monitor web
+from hl7apy.core import Message  # Para construir mensajes HL7
+from hl7apy.parser import parse_message  # Para parsear mensajes HL7
 
-# Configuración
-RIS_MLLP_SERVER_HOST = 'localhost'
-RIS_MLLP_SERVER_PORT = 6662  # Para recibir ADT y OMI
-HIS_MLLP_SERVER_HOST = 'localhost'
-HIS_MLLP_SERVER_PORT = 6661  # Para enviar ACK y ORU
+# Configuración de puertos y hosts para MLLP
+RIS_MLLP_SERVER_HOST = 'localhost'  # Host local para el servidor RIS
+RIS_MLLP_SERVER_PORT = 6662  # Puerto donde el RIS escucha ADT y OMI
+HIS_MLLP_SERVER_HOST = 'localhost'  # Host local para el HIS
+HIS_MLLP_SERVER_PORT = 6661  # Puerto donde el HIS escucha ACK y ORU
 
-# Caracteres MLLP
-MLLP_SB = b'\x0b'  # <VT>
-MLLP_EB = b'\x1c'  # <FS>
-MLLP_CR = b'\x0d'  # <CR>
+# Caracteres especiales del protocolo MLLP
+MLLP_SB = b'\x0b'  # <VT> - Start Block
+MLLP_EB = b'\x1c'  # <FS> - End Block
+MLLP_CR = b'\x0d'  # <CR> - Carriage Return
 
-# Datos del paciente y médicos
+# Datos simulados de paciente y médicos
 PACIENTE = {
     'id': '123456',
     'nombre': 'Juan Antonio',
@@ -30,17 +31,17 @@ PACIENTE = {
     'sexo': 'M',
     'motivo': 'Tos persistente'
 }
-MEDICO_SOLICITANTE = 'Dra. Ana Rodríguez'
-RADIOLOGO = 'Dr. Carlos López'
+MEDICO_SOLICITANTE = 'Dra. Ana Rodríguez'  # Médico que solicita el estudio
+RADIOLOGO = 'Dr. Carlos López'  # Radiólogo que informa
 
-# Bandera para delay de presentación
-DEMO_DELAY = True  # Cambia a False para desactivar el delay
-DEMO_DELAY_SECONDS = 15
+# Bandera y tiempo de delay para presentación didáctica
+DEMO_DELAY = True  # Si es True, agrega pausas entre pasos
+DEMO_DELAY_SECONDS = 7  # Segundos de pausa
 
-# Utilidades MLLP
-
+# Función para enviar mensajes HL7 usando MLLP como cliente
+# host: destino, port: puerto destino, hl7_message: mensaje HL7 en string
+# Devuelve el mensaje HL7 recibido como respuesta (ACK, ORU, etc.)
 def send_mllp_message(host, port, hl7_message):
-    """Envía un mensaje HL7 usando MLLP como cliente."""
     with socket.create_connection((host, port)) as s:
         mllp_msg = MLLP_SB + hl7_message.encode() + MLLP_EB + MLLP_CR
         s.sendall(mllp_msg)
@@ -53,12 +54,14 @@ def send_mllp_message(host, port, hl7_message):
             if MLLP_EB in chunk:
                 break
         if data:
+            # Extrae el mensaje HL7 del bloque MLLP
             hl7 = data.split(MLLP_SB)[-1].split(MLLP_EB)[0].decode(errors='ignore')
             return hl7
         return None
 
+# Función para levantar un servidor MLLP que recibe mensajes HL7
+# port: puerto a escuchar, on_message: función callback para procesar cada mensaje recibido
 def mllp_server(port, on_message):
-    """Servidor MLLP simple para recibir mensajes HL7."""
     def server():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -77,12 +80,16 @@ def mllp_server(port, on_message):
                         if MLLP_EB in chunk:
                             break
                     if data:
+                        # Extrae el mensaje HL7 y lo pasa al callback
                         hl7 = data.split(MLLP_SB)[-1].split(MLLP_EB)[0].decode(errors='ignore')
                         on_message(hl7, conn)
     threading.Thread(target=server, daemon=True).start()
 
 # Creación de mensajes HL7
 
+# Función para construir un mensaje ACK para respuestas a mensajes ADT^A04 y OMI^O23
+# msg_ctrl_id: ID de control del mensaje original, ack_code: código de reconocimiento (AA, AE, etc.)
+# Devuelve el mensaje ACK en formato ER7
 def build_ack(msg_ctrl_id, ack_code='AA'):
     msg = Message("ACK", version="2.5")
     msg.msh.msh_3 = 'RIS'
@@ -98,6 +105,10 @@ def build_ack(msg_ctrl_id, ack_code='AA'):
     msg.msa.msa_2 = msg_ctrl_id
     return msg.to_er7()
 
+# Función para construir un mensaje ORU^R01 con los resultados de estudios
+# msg_ctrl_id: ID de control del mensaje, order_id: ID de la orden, estudio: tipo de estudio (TAC, RX, etc.)
+# obr4: código y descripción del procedimiento, obx5: resultados en texto
+# Devuelve el mensaje ORU^R01 en formato ER7
 def build_oru_r01(msg_ctrl_id, order_id, estudio, obr4, obx5):
     # Construye un mensaje ORU^R01 usando la estructura de grupos estándar HL7 v2.5
     try:
@@ -136,7 +147,7 @@ def build_oru_r01(msg_ctrl_id, order_id, estudio, obr4, obx5):
         return ''
 
 # Manejo de mensajes recibidos por el RIS
-ordenes = []
+ordenes = []  # Lista para almacenar órdenes recibidas
 def on_ris_message(hl7, conn):
     print(f"\n[RIS] Recibido mensaje HL7:\n{hl7}\n")
     web_log(f"Recibido mensaje HL7:\n{hl7}")
@@ -172,8 +183,9 @@ def on_ris_message(hl7, conn):
 
 # Envío de resultados ORU^R01
 
+# Función que envía los resultados de los estudios al HIS en mensajes ORU^R01
 def enviar_resultados():
-    procesadas = set()
+    procesadas = set()  # Conjunto para llevar registro de órdenes ya procesadas
     while True:
         for i, orden in enumerate(ordenes):
             if orden['order_id'] in procesadas:
@@ -200,6 +212,8 @@ def enviar_resultados():
 
 # Envío de logs al monitor web
 
+# Función para enviar mensajes de log al monitor web
+# msg: mensaje a enviar, source: fuente del mensaje (por defecto 'RIS')
 def web_log(msg, source='RIS'):
     try:
         requests.post('http://localhost:5000/log', json={'source': source, 'msg': msg})
@@ -208,6 +222,7 @@ def web_log(msg, source='RIS'):
 
 # MAIN
 if __name__ == "__main__":
+    # Inicia el servidor MLLP para recibir mensajes RIS en el puerto configurado
     mllp_server(RIS_MLLP_SERVER_PORT, on_ris_message)
     print("[RIS] Esperando mensajes del HIS... (Ctrl+C para salir)")
     # Hilo para enviar resultados después de recibir órdenes

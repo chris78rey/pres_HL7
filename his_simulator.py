@@ -2,25 +2,26 @@
 Simulador HIS para flujo HL7 v2 con RIS/PACS usando hl7apy y MLLP.
 Actúa como cliente MLLP (envía ADT, OMI) y servidor MLLP (recibe ACK, ORU).
 """
-import socket
-import threading
-import time
-import requests
-from hl7apy.core import Message
-from hl7apy.parser import parse_message
+# Importación de librerías estándar y de terceros
+import socket  # Para comunicación de red
+import threading  # Para ejecución en hilos
+import time  # Para delays y timestamps
+import requests  # Para enviar logs al monitor web
+from hl7apy.core import Message  # Para construir mensajes HL7
+from hl7apy.parser import parse_message  # Para parsear mensajes HL7
 
-# Configuración
-HIS_MLLP_SERVER_HOST = 'localhost'
-HIS_MLLP_SERVER_PORT = 6661  # Para recibir ACK y ORU
-RIS_MLLP_SERVER_HOST = 'localhost'
-RIS_MLLP_SERVER_PORT = 6662  # Para enviar ADT y OMI
+# Configuración de puertos y hosts para MLLP
+HIS_MLLP_SERVER_HOST = 'localhost'  # Host local para el servidor HIS
+HIS_MLLP_SERVER_PORT = 6661  # Puerto donde el HIS escucha ACK y ORU
+RIS_MLLP_SERVER_HOST = 'localhost'  # Host local para el RIS
+RIS_MLLP_SERVER_PORT = 6662  # Puerto donde el RIS escucha ADT y OMI
 
-# Caracteres MLLP
-MLLP_SB = b'\x0b'  # <VT>
-MLLP_EB = b'\x1c'  # <FS>
-MLLP_CR = b'\x0d'  # <CR>
+# Caracteres especiales del protocolo MLLP
+MLLP_SB = b'\x0b'  # <VT> - Start Block
+MLLP_EB = b'\x1c'  # <FS> - End Block
+MLLP_CR = b'\x0d'  # <CR> - Carriage Return
 
-# Datos del paciente y médicos
+# Datos simulados de paciente y médicos
 PACIENTE = {
     'id': '123456',
     'nombre': 'Juan Antonio',
@@ -29,17 +30,17 @@ PACIENTE = {
     'sexo': 'M',
     'motivo': 'Tos persistente'
 }
-MEDICO_SOLICITANTE = 'Dra. Ana Rodríguez'
-RADIOLOGO = 'Dr. Carlos López'
+MEDICO_SOLICITANTE = 'Dra. Ana Rodríguez'  # Médico que solicita el estudio
+RADIOLOGO = 'Dr. Carlos López'  # Radiólogo que informa
 
-# Bandera para delay de presentación
-DEMO_DELAY = True  # Cambia a False para desactivar el delay
-DEMO_DELAY_SECONDS = 7
+# Bandera y tiempo de delay para presentación didáctica
+DEMO_DELAY = True  # Si es True, agrega pausas entre pasos
+DEMO_DELAY_SECONDS = 7  # Segundos de pausa
 
-# Utilidades MLLP
-
+# Función para enviar mensajes HL7 usando MLLP como cliente
+# host: destino, port: puerto destino, hl7_message: mensaje HL7 en string
+# Devuelve el mensaje HL7 recibido como respuesta (ACK, ORU, etc.)
 def send_mllp_message(host, port, hl7_message):
-    """Envía un mensaje HL7 usando MLLP como cliente."""
     with socket.create_connection((host, port)) as s:
         mllp_msg = MLLP_SB + hl7_message.encode() + MLLP_EB + MLLP_CR
         s.sendall(mllp_msg)
@@ -52,13 +53,14 @@ def send_mllp_message(host, port, hl7_message):
             if MLLP_EB in chunk:
                 break
         if data:
-            # Extraer mensaje HL7
+            # Extrae el mensaje HL7 del bloque MLLP
             hl7 = data.split(MLLP_SB)[-1].split(MLLP_EB)[0].decode(errors='ignore')
             return hl7
         return None
 
+# Función para levantar un servidor MLLP que recibe mensajes HL7
+# port: puerto a escuchar, on_message: función callback para procesar cada mensaje recibido
 def mllp_server(port, on_message):
-    """Servidor MLLP simple para recibir mensajes HL7."""
     def server():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -77,12 +79,16 @@ def mllp_server(port, on_message):
                         if MLLP_EB in chunk:
                             break
                     if data:
+                        # Extrae el mensaje HL7 y lo pasa al callback
                         hl7 = data.split(MLLP_SB)[-1].split(MLLP_EB)[0].decode(errors='ignore')
                         on_message(hl7, conn)
     threading.Thread(target=server, daemon=True).start()
 
 # Creación de mensajes HL7
 
+# Función para construir un mensaje ADT_A01 (registro de paciente)
+# msg_ctrl_id: ID de control del mensaje (para correlacionar con ACK)
+# Devuelve el mensaje ADT_A01 en formato ER7
 def build_adt_a04(msg_ctrl_id):
     # Cambiar ADT_A04 por ADT_A01 (estructura base compatible en hl7apy)
     msg = Message("ADT_A01", version="2.5")
@@ -102,6 +108,11 @@ def build_adt_a04(msg_ctrl_id):
     msg.pv1.pv1_2 = 'I'
     return msg.to_er7()
 
+# Función para construir un mensaje OMI_O23 (orden de estudio)
+# msg_ctrl_id: ID de control del mensaje, order_id: ID de la orden
+# estudio: nombre del estudio, modality: modalidad del estudio (ej. CR, CT)
+# obr4: código y descripción del procedimiento (CPT4), ipc5: código del ítem en el paquete
+# Devuelve el mensaje OMI_O23 en formato ER7
 def build_omi_o23(msg_ctrl_id, order_id, estudio, modality, obr4, ipc5):
     # Usar la estructura OMI_O23 para mensajes OMI^O23 (no OML_O21)
     try:
@@ -134,6 +145,10 @@ def build_omi_o23(msg_ctrl_id, order_id, estudio, modality, obr4, ipc5):
         print(f"[HIS] Error construyendo OMI^O23: {e}")
         return ''
 
+# Función para construir un mensaje ACK (acknowledgment)
+# msg_ctrl_id: ID de control del mensaje original
+# ack_code: código de ACK, 'AA' para acknowledgment positivo
+# Devuelve el mensaje ACK en formato ER7
 def build_ack(msg_ctrl_id, ack_code='AA'):
     msg = Message("ACK", version="2.5")
     msg.msh.msh_3 = 'RIS'
@@ -149,6 +164,11 @@ def build_ack(msg_ctrl_id, ack_code='AA'):
     msg.msa.msa_2 = msg_ctrl_id
     return msg.to_er7()
 
+# Función para construir un mensaje ORU_R01 (informe de resultado)
+# msg_ctrl_id: ID de control del mensaje, order_id: ID de la orden
+# estudio: nombre del estudio, obr4: código y descripción del procedimiento (CPT4)
+# obx5: resultado del estudio
+# Devuelve el mensaje ORU_R01 en formato ER7
 def build_oru_r01(msg_ctrl_id, order_id, estudio, obr4, obx5):
     msg = Message("ORU_R01", version="2.5")
     msg.msh.msh_3 = 'RIS'
@@ -176,6 +196,8 @@ def build_oru_r01(msg_ctrl_id, order_id, estudio, obr4, obx5):
     msg.obx.obx_5 = obx5
     return msg.to_er7()
 
+# Función para enviar logs al monitor web
+# msg: mensaje a enviar, source: fuente del mensaje (por defecto 'HIS')
 def web_log(msg, source='HIS'):
     try:
         requests.post('http://localhost:5000/log', json={'source': source, 'msg': msg})
@@ -184,6 +206,8 @@ def web_log(msg, source='HIS'):
 
 # Manejo de mensajes recibidos por el HIS
 
+# Función que procesa los mensajes HL7 recibidos en el HIS
+# hl7: mensaje HL7 en formato string, conn: conexión del socket
 def on_his_message(hl7, conn):
     print(f"\n[HIS] Recibido mensaje HL7:\n{hl7}\n")
     web_log(f"Recibido mensaje HL7:\n{hl7}")
@@ -192,11 +216,13 @@ def on_his_message(hl7, conn):
         web_log("Advertencia: Mensaje vacío recibido. Ignorando.")
         return
     try:
+        # Intenta parsear el mensaje HL7
         msg = parse_message(hl7, find_groups=False)
     except Exception as e:
         print(f"[HIS] Error al parsear mensaje HL7: {e}\nMensaje recibido:\n{hl7}")
         web_log(f"Error al parsear mensaje HL7: {e}\nMensaje recibido:\n{hl7}")
         return
+    # Manejo de mensajes ACK
     if msg.msh.msh_9.value.startswith('ACK'):
         ack_code = msg.msa.msa_1.value
         print(f"[HIS] ACK recibido: {ack_code}")
@@ -204,10 +230,11 @@ def on_his_message(hl7, conn):
         if ack_code != 'AA':
             print(f"[HIS] ¡Error en ACK! Código: {ack_code}")
             web_log(f"¡Error en ACK! Código: {ack_code}")
+    # Manejo de mensajes ORU^R01 (resultados de estudios)
     elif msg.msh.msh_9.value.startswith('ORU^R01'):
         print(f"[HIS] Resultado recibido para orden: {msg.orc.orc_2.value}")
         web_log(f"Resultado recibido para orden: {msg.orc.orc_2.value}")
-        # Enviar ACK de vuelta
+        # Enviar ACK de vuelta al RIS
         ack = build_ack(msg.msh.msh_10.value, 'AA')
         mllp_msg = MLLP_SB + ack.encode() + MLLP_EB + MLLP_CR
         conn.sendall(mllp_msg)
@@ -216,6 +243,7 @@ def on_his_message(hl7, conn):
 
 # MAIN
 if __name__ == "__main__":
+    # Inicia el servidor MLLP para recibir mensajes HIS
     mllp_server(HIS_MLLP_SERVER_PORT, on_his_message)
     time.sleep(1)  # Espera a que el servidor esté listo
 
